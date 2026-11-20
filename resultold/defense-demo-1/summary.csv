@@ -1,0 +1,5 @@
+run,scenario,policy,goodput_bps,retransmits
+pulsed-adaptive,pulsed,adaptive,3352856.223225334,169
+pulsed-disabled,pulsed,disabled,2045846.776873426,203
+pulsed-average,pulsed,average,2872700.892365145,194
+none-disabled,none,disabled,2993742.091963306,35

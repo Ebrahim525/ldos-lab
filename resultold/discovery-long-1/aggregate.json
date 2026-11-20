@@ -1,0 +1,12 @@
+{
+  "none/disabled": {
+    "n": 1,
+    "mean_mbps": 2.6539765461022378,
+    "retention_percent": 99.99999999999999
+  },
+  "pulsed/disabled": {
+    "n": 2,
+    "mean_mbps": 3.0467648120400233,
+    "retention_percent": 114.79999009466205
+  }
+}

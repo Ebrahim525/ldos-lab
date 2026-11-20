@@ -1,0 +1,6 @@
+run,scenario,policy,goodput_bps,retransmits
+03-pulsed-200000000-10,pulsed,disabled,2546963.89722698,123
+04-pulsed-100000000-40,pulsed,disabled,2886755.814255866,292
+00-none-8000000-100,none,disabled,2663695.551680813,50
+01-pulsed-100000000-20,pulsed,disabled,2464243.723640352,165
+02-pulsed-50000000-20,pulsed,disabled,3384354.4350431524,134

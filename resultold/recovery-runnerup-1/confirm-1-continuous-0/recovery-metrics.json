@@ -1,0 +1,22 @@
+{
+  "scenario": "continuous",
+  "receiver_whole_mbps": 3.136380868125929,
+  "receiver_active_mbps": 2.571268740660306,
+  "acked_active_mbps": 2.567580321286644,
+  "offered_l2_bytes": 2686446,
+  "offered_l2_mbps": 1.0745783999999998,
+  "sent_payload_bytes": 2595600,
+  "active_start_ns": 5285373182461,
+  "active_end_ns": 5305373182461,
+  "active_rto_count": 0,
+  "active_rto_recovery_ms": 0,
+  "active_retransmits": 37,
+  "active_min_cwnd": 13,
+  "active_median_rtt_ms": 88.967,
+  "pre_median_rto_ms": 268.0,
+  "observed_loss_state_samples": 0,
+  "tcp_info_max_gap_ms": 212.788758,
+  "generator_elapsed_s": 20.002072944,
+  "traffic_50ms_cv": 0.2696686253893557,
+  "traffic_last_packet_s": 19.992024167
+}

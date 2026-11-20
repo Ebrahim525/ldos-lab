@@ -1,0 +1,7 @@
+{
+  "heldout_blocks": 3,
+  "selection": "Next discovery-ranked candidate after first candidate confirmation failed",
+  "matching_tolerance": 0.05,
+  "sequential_followup": true,
+  "discovery_source": "/home/nw/Documents/Codex/2026-11-15/we/outputs/ldos-lab/results/recovery-search-1"
+}

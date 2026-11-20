@@ -1,0 +1,28 @@
+{
+  "selected_label": "screen-4",
+  "discovery_penalty_percent": 16.632668646950254,
+  "config": {
+    "version": 1,
+    "algorithm": "reno",
+    "scenario": "pulsed",
+    "policy": "disabled",
+    "duration": 35,
+    "warmup": 5,
+    "active": 20,
+    "rate_bps": 20000000,
+    "on_ms": 40,
+    "period_ms": 400,
+    "payload": 1200,
+    "max_bytes": 20000000,
+    "floor_bps": 6000000,
+    "average_bps": 6000000,
+    "repetitions": 5,
+    "seed": 8,
+    "generator": "native",
+    "tcp_info": true,
+    "sample_interval": 0.5,
+    "iperf_interval": 0.5
+  },
+  "discovery_source": "/home/nw/Documents/Codex/2026-11-15/we/outputs/ldos-lab/results/recovery-search-1",
+  "sequential_followup": true
+}

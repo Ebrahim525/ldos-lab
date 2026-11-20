@@ -1,0 +1,8 @@
+PING 10.208.3.2 (10.208.3.2) 56(84) bytes of data.
+64 bytes from 10.208.3.2: icmp_seq=1 ttl=63 time=70.3 ms
+64 bytes from 10.208.3.2: icmp_seq=2 ttl=63 time=30.8 ms
+64 bytes from 10.208.3.2: icmp_seq=3 ttl=63 time=42.0 ms
+
+--- 10.208.3.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2086ms
+rtt min/avg/max/mdev = 30.842/47.686/70.252/16.589 ms

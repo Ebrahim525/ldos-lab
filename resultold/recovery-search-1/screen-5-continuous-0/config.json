@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "algorithm": "reno",
+  "scenario": "continuous",
+  "policy": "disabled",
+  "duration": 24,
+  "warmup": 4,
+  "active": 14,
+  "rate_bps": 40000000,
+  "on_ms": 40,
+  "period_ms": 800,
+  "payload": 1200,
+  "max_bytes": 1172400,
+  "floor_bps": 6000000,
+  "average_bps": 6000000,
+  "repetitions": 5,
+  "seed": 8,
+  "generator": "native",
+  "tcp_info": true,
+  "sample_interval": 0.5,
+  "iperf_interval": 0.5,
+  "continuous_bps": 669942
+}

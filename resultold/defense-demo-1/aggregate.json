@@ -1,0 +1,22 @@
+{
+  "pulsed/adaptive": {
+    "n": 1,
+    "mean_mbps": 3.3528562232253343,
+    "retention_percent": 111.99549327332068
+  },
+  "pulsed/disabled": {
+    "n": 1,
+    "mean_mbps": 2.045846776873426,
+    "retention_percent": 68.33744237239064
+  },
+  "pulsed/average": {
+    "n": 1,
+    "mean_mbps": 2.872700892365145,
+    "retention_percent": 95.95685947954249
+  },
+  "none/disabled": {
+    "n": 1,
+    "mean_mbps": 2.993742091963306,
+    "retention_percent": 100.0
+  }
+}

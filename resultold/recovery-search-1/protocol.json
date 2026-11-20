@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "seed": 20261115,
+  "grid": [
+    [
+      20000000,
+      80,
+      800
+    ],
+    [
+      20000000,
+      100,
+      1000
+    ],
+    [
+      20000000,
+      80,
+      400
+    ],
+    [
+      80000000,
+      20,
+      800
+    ],
+    [
+      20000000,
+      40,
+      400
+    ],
+    [
+      40000000,
+      40,
+      800
+    ]
+  ],
+  "matching_tolerance": 0.05,
+  "min_continuous_coverage": 0.9,
+  "max_continuous_50ms_cv": 1.0,
+  "selection": "largest active receiver penalty vs matched continuous; require valid match and below-baseline pulse goodput; tie-break lower offered average",
+  "screening_repetitions": 1,
+  "heldout_blocks": 3,
+  "limitations": "Continuous follows pulse because target is measured from that pulse. Baseline position in heldout blocks is randomized. No significance claim from three blocks."
+}

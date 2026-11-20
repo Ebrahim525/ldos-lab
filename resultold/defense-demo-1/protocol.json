@@ -1,0 +1,6 @@
+{
+  "purpose": "Functional XDP congestion mitigation demo",
+  "research_claim": false,
+  "thresholds": "Uncalibrated initial thresholds; report collateral drops; no fair-policy superiority claim",
+  "workload": "20 Mbit/s configured peak, 500ms per second; intended average 10 Mbit/s exceeds 5 Mbit/s link"
+}

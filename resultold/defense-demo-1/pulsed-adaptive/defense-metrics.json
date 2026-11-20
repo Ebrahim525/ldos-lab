@@ -1,0 +1,24 @@
+{
+  "legitimate_dropped_bytes": 140802,
+  "detection_delay_ms": 111.444353,
+  "alerts": 119,
+  "final_source_counters": {
+    "10.208.1.2": {
+      "type": "counter",
+      "source": "10.208.1.2",
+      "offered": 10860766,
+      "passed": 10719964,
+      "dropped": 140802,
+      "alerts": 3
+    },
+    "10.208.2.2": {
+      "type": "counter",
+      "source": "10.208.2.2",
+      "offered": 11140740,
+      "passed": 1217160,
+      "dropped": 9923580,
+      "alerts": 116
+    }
+  },
+  "benign_alerts": null
+}
