@@ -33,6 +33,37 @@ class Configuration(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 lab.config(p)
 
+    def test_temporary_results_removed_on_interrupt(self):
+        try:
+            with lab.experiment_output(None) as (path, save):
+                self.assertFalse(save)
+                path.mkdir()
+                (path / "capture.json").write_text("{}")
+                raise KeyboardInterrupt
+        except KeyboardInterrupt:
+            self.assertFalse(path.parent.exists())
+
+    def test_console_report_does_not_create_files(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            run = root / "run"
+            run.mkdir()
+            (run / "config.json").write_text(
+                json.dumps({"scenario": "none", "policy": "disabled"})
+            )
+            (run / "summary.json").write_text(
+                json.dumps({"goodput_bps": 1000000, "retransmits": 0})
+            )
+            before = set(root.rglob("*"))
+            output = StringIO()
+            with redirect_stdout(output):
+                lab.report(root)
+            self.assertEqual(before, set(root.rglob("*")))
+            self.assertIn("mean_mbps", output.getvalue())
+
     def test_default(self):
         self.assertEqual(lab.config(ROOT / "configs/demo.json")["algorithm"], "reno")
 

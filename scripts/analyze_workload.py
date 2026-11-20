@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Summarize receiver goodput and measured sender workload without root access."""
 
+import argparse
 import csv
 import json
 import pathlib
 import statistics
-import sys
 
 
 def interval_rate(intervals, start, end):
@@ -20,8 +20,6 @@ def interval_rate(intervals, start, end):
 
 
 def analyze(folder, output=None):
-    output = output or folder
-    output.mkdir(parents=True, exist_ok=True)
     rows = []
     for p in sorted(folder.glob("*/summary.json")):
         d = p.parent
@@ -88,10 +86,6 @@ def analyze(folder, output=None):
         rows.append(row)
     if not rows:
         raise ValueError("No completed runs")
-    with open(output / "workload-comparison.csv", "w") as f:
-        w = csv.DictWriter(f, fieldnames=rows[0])
-        w.writeheader()
-        w.writerows(rows)
     heterogeneous = (
         len(
             {
@@ -138,12 +132,26 @@ def analyze(folder, output=None):
             - groups["pulsed"]["nominal_active_goodput_mbps"]
             / groups["none"]["nominal_active_goodput_mbps"]
         )
-    (output / "workload-comparison.json").write_text(json.dumps(groups, indent=2))
     print(json.dumps(groups, indent=2))
+    if output is not None:
+        output.mkdir(parents=True, exist_ok=True)
+        with (output / "workload-comparison.csv").open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0])
+            writer.writeheader()
+            writer.writerows(rows)
+        (output / "workload-comparison.json").write_text(json.dumps(groups, indent=2))
 
 
 if __name__ == "__main__":
-    analyze(
-        pathlib.Path(sys.argv[1]),
-        pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else None,
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source", type=pathlib.Path)
+    parser.add_argument(
+        "destination", nargs="?", type=pathlib.Path, help=argparse.SUPPRESS
     )
+    parser.add_argument(
+        "--output", type=pathlib.Path, help="Save CSV and JSON summaries"
+    )
+    args = parser.parse_args()
+    if args.output and args.destination:
+        parser.error("specify only one output directory")
+    analyze(args.source, args.output or args.destination)

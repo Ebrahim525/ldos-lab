@@ -12,6 +12,8 @@ import math
 import csv
 import os
 
+# Keep local imports from creating bytecode beside the source.
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import lab
 
@@ -248,8 +250,7 @@ def block(c, out, label, rng):
     return result
 
 
-def main():
-    out = pathlib.Path(sys.argv[1]).resolve()
+def main(out, *, save):
     if out.exists():
         raise SystemExit("Choose new output path")
     out.mkdir(parents=True)
@@ -314,6 +315,7 @@ def main():
             out / "outcome.json",
             {"status": "No eligible matched candidate; no best config selected"},
         )
+        print("No eligible matched candidate; no best config selected", flush=True)
         return
     best = max(
         eligible,
@@ -380,11 +382,11 @@ def main():
     dump(out / "outcome.json", outcome)
     print(json.dumps(outcome, indent=2), flush=True)
     # Return top-level artifacts to sudo caller, without changing unrelated paths.
-    if "SUDO_UID" in os.environ:
+    if save and "SUDO_UID" in os.environ:
         for p in [out, *out.rglob("*")]:
             if not p.is_symlink():
                 os.chown(p, int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"]))
 
 
 if __name__ == "__main__":
-    main()
+    lab.batch_cli(main)

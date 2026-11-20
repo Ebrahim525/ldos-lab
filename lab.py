@@ -15,12 +15,73 @@ import socket
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 
 ROOT = pathlib.Path(__file__).resolve().parent
 NS = {k: "ld8-" + k for k in ("sender", "attack", "defender", "receiver")}
+
+
+def log(message):
+    print(message, flush=True)
+
+
+@contextmanager
+def experiment_output(path):
+    """Keep raw captures only when an output path was explicitly supplied."""
+    previous_handler = signal.getsignal(signal.SIGTERM)
+
+    def interrupted(*_):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        if path is None:
+            with tempfile.TemporaryDirectory(prefix="ldos-lab-") as temporary:
+                yield pathlib.Path(temporary) / "runs", False
+        else:
+            destination = pathlib.Path(path).resolve()
+            newly_created = not destination.exists()
+            try:
+                yield destination, True
+            finally:
+                if (
+                    newly_created
+                    and destination.exists()
+                    and os.geteuid() == 0
+                    and "SUDO_UID" in os.environ
+                ):
+                    os.chown(
+                        destination,
+                        int(os.environ["SUDO_UID"]),
+                        int(os.environ["SUDO_GID"]),
+                    )
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
+
+
+def batch_cli(callback, *, with_source=False):
+    """Preserve the historical positional output path and accept --output."""
+    parser = argparse.ArgumentParser(description=sys.modules["__main__"].__doc__)
+    if with_source:
+        parser.add_argument("source", type=pathlib.Path)
+    parser.add_argument("destination", nargs="?", help=argparse.SUPPRESS)
+    parser.add_argument("--output", help="Keep logs and reports in this directory")
+    args = parser.parse_args()
+    if args.destination and args.output:
+        parser.error("specify only one output directory")
+    if os.geteuid() != 0:
+        parser.error("run this experiment with sudo")
+    try:
+        with experiment_output(args.output or args.destination) as (out, save):
+            inputs = (args.source.resolve(),) if with_source else ()
+            callback(*inputs, out, save=save)
+    except KeyboardInterrupt:
+        print("Interrupted. Lab cleanup completed.", file=sys.stderr)
+        raise SystemExit(130)
 
 
 def cmd(*args, ns=None, check=True):
@@ -301,13 +362,17 @@ def spawn(args, ns, file):
 
 
 # One experiment owns its subprocesses, evidence files, and final cleanup.
-def run(c, out):
+def run(c, out, *, details=True):
     out.mkdir(parents=True)
     (out / "config.json").write_text(json.dumps(c, indent=2))
     procs = []
     files = []
     stop = threading.Event()
     thread = None
+    ready = threading.Event()
+    loader_thread = None
+    counters = {}
+    alerted_sources = set()
 
     def start(args, ns, name):
         f = open(out / name, "w")
@@ -316,30 +381,37 @@ def run(c, out):
         procs.append(p)
         return p
 
+    log(f"Run {out.name}: {c['scenario']}, {c['policy']}, TCP {c['algorithm']}")
+    log("Creating isolated lab network")
     up()
     try:
-        (out / "environment.json").write_text(
-            json.dumps(
-                {
-                    "uname": os.uname().release,
-                    "mode": "skb",
-                    "topology_revision": 2,
-                    "delay_placement": "endpoint-ingress-ifb",
-                    "start_ns": time.monotonic_ns(),
-                    "congestion": cmd(
-                        "sysctl", "net.ipv4.tcp_available_congestion_control"
-                    ),
-                    "routes": {n: cmd("ip", "route", ns=n) for n in NS},
-                    "offloads": {
-                        n: cmd("ethtool", "-k", "eth0", ns=n)
-                        for n in ("sender", "attack", "receiver")
+        if details:
+            (out / "environment.json").write_text(
+                json.dumps(
+                    {
+                        "uname": os.uname().release,
+                        "mode": "skb",
+                        "topology_revision": 2,
+                        "delay_placement": "endpoint-ingress-ifb",
+                        "start_ns": time.monotonic_ns(),
+                        "congestion": cmd(
+                            "sysctl", "net.ipv4.tcp_available_congestion_control"
+                        ),
+                        "routes": {n: cmd("ip", "route", ns=n) for n in NS},
+                        "offloads": {
+                            n: cmd("ethtool", "-k", "eth0", ns=n)
+                            for n in ("sender", "attack", "receiver")
+                        },
                     },
-                },
-                indent=2,
+                    indent=2,
+                )
             )
-        )
-        (out / "ping.txt").write_text(cmd("ping", "-c", "3", "10.208.3.2", ns="sender"))
-        loader = start(
+        ping = cmd("ping", "-c", "3", "10.208.3.2", ns="sender")
+        if details:
+            (out / "ping.txt").write_text(ping)
+        for line in ping.splitlines()[-2:]:
+            log(f"[ping] {line}")
+        loader = spawn(
             [
                 ROOT / "build/loader",
                 ROOT / "build/defense.bpf.o",
@@ -350,13 +422,39 @@ def run(c, out):
                 c["average_bps"],
             ],
             "defender",
-            "bpf.jsonl",
+            subprocess.PIPE,
         )
+        procs.append(loader)
+
+        def read_loader():
+            with loader.stdout as stream, (out / "bpf.jsonl").open("wb") as capture:
+                for raw in stream:
+                    capture.write(raw)
+                    line = raw.decode(errors="replace").strip()
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        log(f"[XDP] {line}")
+                        continue
+                    if record.get("type") == "ready":
+                        log("[XDP] Attached to defender p1 and p2")
+                        ready.set()
+                    elif record.get("type") == "counter":
+                        counters[record["source"]] = record
+                    elif record.get("type") == "event" and record.get("kind") == 1:
+                        source = record["source"]
+                        if source not in alerted_sources:
+                            log(
+                                f"[XDP] First alert for {source}: {record['rate'] / 1e6:.2f} Mbit/s"
+                            )
+                            alerted_sources.add(source)
+
+        loader_thread = threading.Thread(target=read_loader)
+        loader_thread.start()
         deadline = time.monotonic() + 5
-        while '"ready"' not in (out / "bpf.jsonl").read_text():
+        while not ready.wait(0.05):
             if loader.poll() is not None or time.monotonic() > deadline:
-                raise RuntimeError("XDP loader failed: see bpf.jsonl")
-            time.sleep(0.05)
+                raise RuntimeError("XDP loader failed to attach")
         start(["iperf3", "-s", "-1", "-J"], "receiver", "server.json")
         start(
             [
@@ -407,13 +505,15 @@ def run(c, out):
                     f.flush()
                     stop.wait(c.get("sample_interval", 0.1))
 
-        thread = threading.Thread(target=sample)
-        thread.start()
-        if c.get("tcp_info"):
+        if details:
+            thread = threading.Thread(target=sample)
+            thread.start()
+        if details and c.get("tcp_info"):
             start(
                 [ROOT / "build/tcpwatch", c["duration"] + 5], "sender", "tcp-info.jsonl"
             )
         timing = {"tcp_launch_ns": time.monotonic_ns()}
+        log(f"Starting TCP transfer ({c['duration']} s)")
         tcp = start(
             [
                 "iperf3",
@@ -432,9 +532,12 @@ def run(c, out):
         )
         time.sleep(c["warmup"])
         timing["workload_launch_ns"] = time.monotonic_ns()
-        (out / "timing.json").write_text(json.dumps(timing, indent=2))
+        if details:
+            (out / "timing.json").write_text(json.dumps(timing, indent=2))
+        sender = None
         if c["scenario"] != "none":
-            start(
+            log(f"Starting competing traffic ({c['active']} s)")
+            sender = start(
                 [
                     sys.executable,
                     ROOT / "lab.py",
@@ -448,19 +551,29 @@ def run(c, out):
             )
         tcp.wait(timeout=c["duration"] + 10)
         if tcp.returncode:
-            raise RuntimeError("iperf3 failed: see client.json")
+            log((out / "client.json").read_text(errors="replace"))
+            raise RuntimeError(f"iperf3 failed (exit {tcp.returncode})")
+        if sender is not None:
+            try:
+                sent = json.loads(
+                    (out / "udp-sender.jsonl").read_text().splitlines()[-1]
+                )
+                log(f"[UDP] Sent {sent['sent_payload_bytes']:,} payload bytes")
+            except (IndexError, json.JSONDecodeError, KeyError):
+                log("[UDP] Sender did not report a payload total")
         stop.set()
-        thread.join(timeout=5)
+        if thread is not None:
+            thread.join(timeout=5)
         summary = json.loads((out / "client.json").read_text())["end"]
-        (out / "summary.json").write_text(
-            json.dumps(
-                {
-                    "goodput_bps": summary["sum_received"]["bits_per_second"],
-                    "retransmits": summary["sum_sent"].get("retransmits"),
-                },
-                indent=2,
-            )
+        result = {
+            "goodput_bps": summary["sum_received"]["bits_per_second"],
+            "retransmits": summary["sum_sent"].get("retransmits"),
+        }
+        log(
+            f"[TCP] Receiver goodput {result['goodput_bps'] / 1e6:.3f} Mbit/s, "
+            f"retransmissions {result['retransmits']}"
         )
+        (out / "summary.json").write_text(json.dumps(result, indent=2))
     finally:
         stop.set()
         if thread:
@@ -476,6 +589,15 @@ def run(c, out):
         for f in files:
             f.close()
         down()
+        if loader_thread is not None:
+            loader_thread.join()
+        for source, record in sorted(counters.items()):
+            log(
+                f"[XDP] {source} offered={record['offered']:,} B "
+                f"passed={record['passed']:,} B dropped={record['dropped']:,} B "
+                f"alerts={record['alerts']}"
+            )
+        log("Lab network removed")
         if os.geteuid() == 0 and "SUDO_UID" in os.environ and "SUDO_GID" in os.environ:
             uid, gid = int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"])
             for item in [out, *out.rglob("*")]:
@@ -483,9 +605,9 @@ def run(c, out):
                     os.chown(item, uid, gid)
 
 
-def report(folder):
+def report(folder, *, output=None):
     rows = []
-    for p in folder.rglob("summary.json"):
+    for p in sorted(folder.rglob("summary.json")):
         c = json.loads((p.parent / "config.json").read_text())
         s = json.loads(p.read_text())
         rows.append(
@@ -498,59 +620,57 @@ def report(folder):
         )
     if not rows:
         raise RuntimeError("No successful runs")
-    with open(folder / "summary.csv", "w") as f:
-        w = csv.DictWriter(f, fieldnames=rows[0])
-        w.writeheader()
-        w.writerows(rows)
+
+    groups = {}
+    for row in rows:
+        groups.setdefault(f"{row['scenario']}/{row['policy']}", []).append(
+            row["goodput_bps"] / 1e6
+        )
+    baseline = (
+        statistics.mean(groups["none/disabled"]) if "none/disabled" in groups else None
+    )
+    aggregate = {
+        key: {
+            "n": len(values),
+            "mean_mbps": statistics.mean(values),
+            "retention_percent": (
+                100 * statistics.mean(values) / baseline if baseline else None
+            ),
+        }
+        for key, values in groups.items()
+    }
+    log(json.dumps(aggregate, indent=2))
+    if output is None:
+        return
+
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / "summary.csv").open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0])
+        writer.writeheader()
+        writer.writerows(rows)
+    (output / "aggregate.json").write_text(json.dumps(aggregate, indent=2))
+
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    groups = {}
-    for r in rows:
-        groups.setdefault(r["scenario"] + "/" + r["policy"], []).append(
-            r["goodput_bps"] / 1e6
-        )
     labels = list(groups)
     plt.figure(figsize=(12, 5))
     plt.bar(
         labels,
-        [statistics.mean(groups[k]) for k in labels],
-        yerr=[statistics.stdev(groups[k]) if len(groups[k]) > 1 else 0 for k in labels],
+        [aggregate[key]["mean_mbps"] for key in labels],
+        yerr=[
+            statistics.stdev(groups[key]) if len(groups[key]) > 1 else 0
+            for key in labels
+        ],
     )
     plt.ylabel("Receiver goodput (Mbit/s); error bars: SD")
     plt.xticks(rotation=40, ha="right")
     plt.tight_layout()
-    plt.savefig(folder / "goodput.png")
+    plt.savefig(output / "goodput.png")
     plt.close()
-    baseline = (
-        statistics.mean(
-            [
-                r["goodput_bps"]
-                for r in rows
-                if r["scenario"] == "none" and r["policy"] == "disabled"
-            ]
-        )
-        if any(r["scenario"] == "none" and r["policy"] == "disabled" for r in rows)
-        else None
-    )
-    detailed_report(folder)
-    (folder / "aggregate.json").write_text(
-        json.dumps(
-            {
-                k: {
-                    "n": len(v),
-                    "mean_mbps": statistics.mean(v),
-                    "retention_percent": (
-                        100 * statistics.mean(v) * 1e6 / baseline if baseline else None
-                    ),
-                }
-                for k, v in groups.items()
-            },
-            indent=2,
-        )
-    )
+    detailed_report(folder, output)
 
 
 def select_connection(ss, algorithm):
@@ -568,7 +688,7 @@ def select_connection(ss, algorithm):
     return max(lines, key=sent, default="")
 
 
-def detailed_report(folder):
+def detailed_report(folder, output):
     import matplotlib
 
     matplotlib.use("Agg")
@@ -576,6 +696,8 @@ def detailed_report(folder):
 
     for summary in folder.rglob("summary.json"):
         d = summary.parent
+        destination = output / d.relative_to(folder)
+        destination.mkdir(parents=True, exist_ok=True)
         c = json.loads((d / "config.json").read_text())
         data = json.loads((d / "client.json").read_text())
         receiver_path = d / "server.json"
@@ -615,7 +737,7 @@ def detailed_report(folder):
             axis.set_ylabel(label)
         axes[2].set_xlabel("Seconds from first sample")
         fig.tight_layout()
-        fig.savefig(d / "timeline.png")
+        fig.savefig(destination / "timeline.png")
         plt.close(fig)
         events = [json.loads(x) for x in (d / "bpf.jsonl").read_text().splitlines()]
         counters = {x["source"]: x for x in events if x.get("type") == "counter"}
@@ -645,11 +767,11 @@ def detailed_report(folder):
                 else None
             ),
         }
-        (d / "defense-metrics.json").write_text(json.dumps(metrics, indent=2))
+        (destination / "defense-metrics.json").write_text(json.dumps(metrics, indent=2))
 
 
 # Fit thresholds on benign training trials, then check separate validation trials.
-def calibrate(c, out):
+def calibrate(c, out, *, details=True):
     """Independent training/validation benign trials; thresholds never see attack trials."""
     out.mkdir(parents=True, exist_ok=True)
     observed = {}
@@ -657,7 +779,9 @@ def calibrate(c, out):
         rates = []
         for scenario in ("none", "benign"):
             directory = out / (split + "-" + scenario)
-            run(dict(c, scenario=scenario, policy="observe"), directory)
+            run(
+                dict(c, scenario=scenario, policy="observe"), directory, details=details
+            )
             for line in (directory / "bpf.jsonl").read_text().splitlines():
                 r = json.loads(line)
                 if r.get("type") == "event" and r.get("kind") == 3:
@@ -679,6 +803,7 @@ def calibrate(c, out):
         raise RuntimeError("No candidate satisfies benign validation target")
     threshold, multiplier, fraction = chosen
     frozen = dict(c, floor_bps=threshold, average_bps=threshold)
+    log("[calibration] Frozen configuration:\n" + json.dumps(frozen, indent=2))
     (out / "frozen.json").write_text(json.dumps(frozen, indent=2))
     (out / "calibration.json").write_text(
         json.dumps(
@@ -703,12 +828,12 @@ def main():
     for name in ("run", "matrix", "calibrate", "validate"):
         x = sub.add_parser(name)
         x.add_argument("--config", default=str(ROOT / "configs/demo.json"))
-        x.add_argument("--output", default=str(ROOT / "results"))
+        x.add_argument("--output", help="Keep logs and reports in this directory")
     r = sub.add_parser("report")
     r.add_argument("--input", required=True)
     r.add_argument(
         "--output",
-        help="Copy raw results into a new writable directory and report there",
+        help="Save charts and summary files in a new directory",
     )
     w = sub.add_parser("worker")
     w.add_argument("kind", choices=["send", "sink"])
@@ -741,8 +866,9 @@ def main():
             destination = pathlib.Path(a.output).resolve()
             if destination == source or source in destination.parents:
                 raise ValueError("Output must be outside the input directory")
-            shutil.copytree(source, destination)
-            return report(destination)
+            if destination.exists():
+                raise FileExistsError(f"Choose a new output directory: {destination}")
+            return report(source, output=destination)
         return report(source)
     if os.geteuid() != 0:
         raise RuntimeError(
@@ -751,40 +877,43 @@ def main():
     if a.op == "lab":
         return up() if a.action == "up" else down()
     c = config(a.config)
-    out = pathlib.Path(a.output).resolve()
-    if a.op == "calibrate":
-        return calibrate(c, out)
-    if a.op == "run":
-        return run(
-            c, out / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6])
-        )
-    if a.op == "validate":
-        cases = [("none", "disabled"), ("pulsed", "disabled")]
-        jobs = cases * 3
-        random.Random(c["seed"]).shuffle(jobs)
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "order.json").write_text(json.dumps(jobs))
-        for i, (scenario, policy) in enumerate(jobs):
+    with experiment_output(a.output) as (out, save):
+        if a.op == "calibrate":
+            calibrate(c, out, details=save)
+        elif a.op == "run":
             run(
-                dict(c, scenario=scenario, policy=policy),
-                out / f"{i:03d}-{scenario}-{policy}",
+                c,
+                out / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]),
+                details=save,
             )
-        return report(out)
-    cases = [("none", "disabled")] + list(
-        itertools.product(
-            ("pulsed", "continuous", "benign"), ("disabled", "average", "adaptive")
+        else:
+            run_matrix(c, out, validate=a.op == "validate", save=save)
+        if save:
+            log(f"Saved results in {out}")
+
+
+def run_matrix(c, out, *, validate, save):
+    if validate:
+        jobs = [("none", "disabled"), ("pulsed", "disabled")] * 3
+    else:
+        cases = [("none", "disabled")] + list(
+            itertools.product(
+                ("pulsed", "continuous", "benign"), ("disabled", "average", "adaptive")
+            )
         )
-    )
-    jobs = cases * c["repetitions"]
+        jobs = cases * c["repetitions"]
     random.Random(c["seed"]).shuffle(jobs)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "order.json").write_text(json.dumps(jobs))
+    if save:
+        (out / "order.json").write_text(json.dumps(jobs))
     for i, (scenario, policy) in enumerate(jobs):
+        log(f"Trial {i + 1}/{len(jobs)}")
         run(
             dict(c, scenario=scenario, policy=policy),
             out / f"{i:03d}-{scenario}-{policy}",
+            details=save,
         )
-    report(out)
+    report(out, output=out if save else None)
 
 
 if __name__ == "__main__":
@@ -795,6 +924,11 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, interrupted)
     try:
         main()
-    except (Exception, KeyboardInterrupt) as e:
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        if isinstance(e, subprocess.CalledProcessError) and e.stderr:
+            print(e.stderr.rstrip(), file=sys.stderr)
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)

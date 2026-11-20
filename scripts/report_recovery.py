@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
 """Render discovery and independent confirmation without pooling configurations."""
 
+import argparse
 import pathlib
 import json
 import statistics
 import sys
 import csv
 import math
-import matplotlib
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
+# Keep local imports from creating bytecode beside the source.
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from recovery_search import flow, ack_at
 
 
-def main(source, out):
-    out.mkdir(parents=True, exist_ok=True)
+def main(source, out=None):
     load = lambda p: json.loads(p.read_text())
     screens = load(source / "screening-results.json")
     held = (
@@ -62,11 +60,13 @@ def main(source, out):
                 a["mismatch_fraction"] * 100 for a in r["attempts"] if a["valid"]
             )
         rows.append(row)
-    fields = list(dict.fromkeys(k for row in rows for k in row))
-    with open(out / "comparisons.csv", "w") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
-        w.writerows(rows)
+    if out is not None:
+        out.mkdir(parents=True, exist_ok=True)
+        fields = list(dict.fromkeys(k for row in rows for k in row))
+        with open(out / "comparisons.csv", "w") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(rows)
     valid = [r for r in held if r["valid"]]
     text = [
         "# Matched-load pulse search and TCP recovery",
@@ -96,7 +96,8 @@ def main(source, out):
             "",
             f"Configured peak **{c['rate_bps']/1e6:.0f} Mbit/s**, on-time **{c['on_ms']} ms**, period **{c['period_ms']} ms**. Generator: native C; Reno; 5 Mbit/s, 30-packet shared FIFO; defense disabled. Ideal average: {c['rate_bps']*c['on_ms']/c['period_ms']/1e6:.2f} Mbit/s. Selection used the largest valid discovery penalty below the baseline, with lower offered average as tie-break.",
         ]
-        (out / "selected-config.json").write_text(json.dumps(c, indent=2) + "\n")
+        if out is not None:
+            (out / "selected-config.json").write_text(json.dumps(c, indent=2) + "\n")
     text += [
         "",
         "## Independent confirmation",
@@ -153,65 +154,74 @@ def main(source, out):
                     else "Not observed before run ended"
                 )
             text.append("| " + r["label"] + " | " + " | ".join(v) + " |")
-        fig, ax = plt.subplots(figsize=(8, 4))
-        for i, kind in enumerate(("baseline", "continuous", "pulse")):
-            v = [r[kind]["receiver_active_mbps"] for r in valid]
-            ax.bar(
-                i,
-                statistics.mean(v),
-                color=["#718096", "#3182bd", "#d55e00"][i],
-                alpha=0.65,
+        if out is not None:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            fig, ax = plt.subplots(figsize=(8, 4))
+            for i, kind in enumerate(("baseline", "continuous", "pulse")):
+                v = [r[kind]["receiver_active_mbps"] for r in valid]
+                ax.bar(
+                    i,
+                    statistics.mean(v),
+                    color=["#718096", "#3182bd", "#d55e00"][i],
+                    alpha=0.65,
+                )
+                ax.scatter([i] * len(v), v, color="black", s=30)
+            ax.set_xticks(range(3), ["Baseline", "Matched continuous", "Pulsed"])
+            ax.set_ylabel("Active receiver goodput (Mbit/s)")
+            ax.set_title("Independent confirmation: dots are individual trials")
+            fig.tight_layout()
+            fig.savefig(out / "confirmation.png")
+            plt.close(fig)
+            fig, axes = plt.subplots(
+                len(valid), 3, figsize=(13, 3 * len(valid)), squeeze=False
             )
-            ax.scatter([i] * len(v), v, color="black", s=30)
-        ax.set_xticks(range(3), ["Baseline", "Matched continuous", "Pulsed"])
-        ax.set_ylabel("Active receiver goodput (Mbit/s)")
-        ax.set_title("Independent confirmation: dots are individual trials")
-        fig.tight_layout()
-        fig.savefig(out / "confirmation.png")
-        plt.close(fig)
-        fig, axes = plt.subplots(
-            len(valid), 3, figsize=(13, 3 * len(valid)), squeeze=False
-        )
-        for index, r in enumerate(valid):
-            for kind, color in [("pulse", "#d55e00"), ("continuous", "#3182bd")]:
-                f = flow(source / r[kind + "_run"])
-                start = r[kind]["active_start_ns"]
-                stop = r[kind]["active_end_ns"]
-                times = [(x["ns"] - start) / 1e9 for x in f]
-                axes[index, 0].plot(
-                    times, [x["cwnd"] for x in f], color=color, label=kind
-                )
-                base = f[0]["total_rto"]
-                axes[index, 1].step(
-                    times, [x["total_rto"] - base for x in f], where="post", color=color
-                )
-                x = []
-                y = []
-                for sec in range(-3, 31):
-                    a = start + sec * 1e9
-                    b = a + 1e9
-                    if a >= f[0]["ns"] and b <= f[-1]["ns"]:
-                        x.append(sec + 0.5)
-                        y.append((ack_at(f, b) - ack_at(f, a)) * 8 / 1e6)
-                axes[index, 2].plot(x, y, color=color)
-            for ax in axes[index]:
-                ax.axvline(0, color="gray", ls=":")
-                ax.axvline((stop - start) / 1e9, color="gray", ls=":")
-                ax.set_xlabel("Seconds from workload start")
-            axes[index, 0].set_ylabel(r["label"])
-            axes[index, 0].legend()
-        for ax, title in zip(
-            axes[0],
-            [
-                "Congestion window (segments)",
-                "Cumulative kernel RTO events",
-                "TCP-acked goodput (Mbit/s, 1s bins)",
-            ],
-        ):
-            ax.set_title(title)
-        fig.tight_layout()
-        fig.savefig(out / "recovery.png")
-        plt.close(fig)
+            for index, r in enumerate(valid):
+                for kind, color in [("pulse", "#d55e00"), ("continuous", "#3182bd")]:
+                    f = flow(source / r[kind + "_run"])
+                    start = r[kind]["active_start_ns"]
+                    stop = r[kind]["active_end_ns"]
+                    times = [(x["ns"] - start) / 1e9 for x in f]
+                    axes[index, 0].plot(
+                        times, [x["cwnd"] for x in f], color=color, label=kind
+                    )
+                    base = f[0]["total_rto"]
+                    axes[index, 1].step(
+                        times,
+                        [x["total_rto"] - base for x in f],
+                        where="post",
+                        color=color,
+                    )
+                    x = []
+                    y = []
+                    for sec in range(-3, 31):
+                        a = start + sec * 1e9
+                        b = a + 1e9
+                        if a >= f[0]["ns"] and b <= f[-1]["ns"]:
+                            x.append(sec + 0.5)
+                            y.append((ack_at(f, b) - ack_at(f, a)) * 8 / 1e6)
+                    axes[index, 2].plot(x, y, color=color)
+                for ax in axes[index]:
+                    ax.axvline(0, color="gray", ls=":")
+                    ax.axvline((stop - start) / 1e9, color="gray", ls=":")
+                    ax.set_xlabel("Seconds from workload start")
+                axes[index, 0].set_ylabel(r["label"])
+                axes[index, 0].legend()
+            for ax, title in zip(
+                axes[0],
+                [
+                    "Congestion window (segments)",
+                    "Cumulative kernel RTO events",
+                    "TCP-acked goodput (Mbit/s, 1s bins)",
+                ],
+            ):
+                ax.set_title(title)
+            fig.tight_layout()
+            fig.savefig(out / "recovery.png")
+            plt.close(fig)
     text += [
         "",
         "## Measurement and limitations",
@@ -225,9 +235,23 @@ def main(source, out):
         "",
         f"Raw evidence: {source}",
     ]
-    (out / "results.md").write_text("\n".join(text) + "\n")
-    (out / "outcome.json").write_text(json.dumps(outcome, indent=2))
+    report = "\n".join(text)
+    print(report)
+    if out is not None:
+        (out / "results.md").write_text(report + "\n")
+        (out / "outcome.json").write_text(json.dumps(outcome, indent=2))
 
 
 if __name__ == "__main__":
-    main(pathlib.Path(sys.argv[1]).resolve(), pathlib.Path(sys.argv[2]).resolve())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source", type=pathlib.Path)
+    parser.add_argument(
+        "destination", nargs="?", type=pathlib.Path, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--output", type=pathlib.Path, help="Save the report and figures"
+    )
+    args = parser.parse_args()
+    if args.output and args.destination:
+        parser.error("specify only one output directory")
+    main(args.source.resolve(), args.output or args.destination)

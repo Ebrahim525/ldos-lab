@@ -100,20 +100,13 @@ libbpf. Python runs directly; matplotlib is the plotting dependency.
 For the current four-condition demo:
 
 ```bash
-sudo python3 scripts/defense_demo.py results/defense-demo-new
+sudo python3 scripts/defense_demo.py
 ```
 
-Use a **fresh output directory**. The sequence is normal TCP, pulses with no
-filtering, pulses with average-rate filtering, and pulses with adaptive filtering.
-Each run lasts 24 seconds: 4 seconds warm-up, 14 seconds competing traffic, and
-6 seconds recovery. The configured source peak is 20 Mbit/s with 500 ms pulses
-once per second. Its ideal average is 10 Mbit/s, above the bottleneck capacity;
-this is deliberately a congestion demo, not the project's low-rate proof.
-
-This historical demo wrapper also writes a stopped-status marker in
-`results/recovery-runnerup-1/status.json`; that directory exists in this workspace.
-For a clean source-only copy without old experiment directories, use the general
-`lab.py run` command below rather than that historical wrapper.
+The sequence is normal TCP, pulses with no filtering, average-rate filtering, and
+adaptive filtering. Each run lasts 24 seconds: 4 seconds warm-up, 14 seconds of
+competing traffic, and 6 seconds recovery. The configured workload's ideal
+average exceeds the bottleneck capacity. Use it as a congestion demo.
 
 For an individual run:
 
@@ -121,20 +114,31 @@ For an individual run:
 sudo python3 lab.py run --config configs/functional-demo.json
 ```
 
-Copy the JSON to a new file and select `policy` as `disabled`, `average`, or
-`adaptive` to run another mode. To create plots from an existing writable result
-folder:
+Runs print progress, ping results, XDP attachment and first alerts, traffic totals,
+TCP goodput and retransmissions, and final per-source counters. Temporary files
+needed to collect and parse measurements are removed on exit. Routine console
+runs skip detailed socket and queue snapshots. The research scripts request
+additional temporary measurements for their summaries.
+
+To keep raw captures, supply an explicit output directory. Use a fresh directory
+for each batch. For an individual run, the runner creates a unique child directory.
 
 ```bash
-python3 lab.py report --input results/defense-demo-new
+sudo python3 lab.py run --config configs/functional-demo.json --output results
+sudo python3 scripts/defense_demo.py --output results/defense-demo-new
 ```
 
-For old root-owned results, copy evidence and generate reports into a new,
-writable directory outside the input directory:
+A report prints the summary by default. Supply `--output` to export charts and
+summaries into a new directory. The export reads the raw capture in place.
 
 ```bash
-python3 lab.py report --input results/defense-demo-1 --output ../defense-review-new
+python3 lab.py report --input ../ldos-lab-history/results/defense-demo-1
+python3 lab.py report --input ../ldos-lab-history/results/defense-demo-1 --output results/defense-report
 ```
+
+Past experiment captures are in `../ldos-lab-history/results` and
+`../ldos-lab-history/recent-results`. The historical analysis reports remain in the
+`../ldos-lab-history/analyses`.
 
 Runs normally clean up automatically. Manual cleanup is available:
 
@@ -151,13 +155,13 @@ VM terminal with `sudo modprobe ifb`.
 
 `lab.py run()` coordinates the following sequence:
 
-1. Validate and save the configuration; create an evidence directory.
+1. Validate the configuration and prepare temporary or requested capture storage.
 2. Create namespaces, veths, private routes, offload settings, delay, and bottleneck.
-3. Save environment details and run a sender-to-receiver ping check.
+3. Run a sender-to-receiver ping check and capture environment details for detailed runs.
 4. Start the loader in the defender and wait for its `ready` record.
 5. Start the receiver's iperf3 server and UDP drain process.
-6. Start periodic `ss`, qdisc, and process-status sampling. If `tcp_info` is true,
-   also start the direct kernel TCP collector.
+6. For detailed captures, start periodic `ss`, qdisc, and process-status sampling.
+   If `tcp_info` is true, also start the direct kernel TCP collector.
 7. Launch legitimate TCP, wait through warm-up, then start competing UDP traffic.
 8. Wait for TCP completion and write the receiver-goodput/retransmission summary.
 9. Terminate child processes, flush/close files, and remove the lab namespaces in
@@ -193,7 +197,7 @@ The commands are:
 | `validate --config FILE --output DIR` | Runs three randomized normal/pulsed pairs. |
 | `matrix --config FILE --output DIR` | Runs the full scenario/policy matrix in recorded randomized order. At five repetitions it has 50 runs. |
 | `calibrate --config FILE --output DIR` | Produces benign-data calibration evidence and `frozen.json`. |
-| `report --input DIR [--output DIR]` | Reports saved results, optionally copying them to a writable destination. |
+| `report --input DIR [--output DIR]` | Prints a summary of saved results. An explicit output directory exports summaries and plots. |
 | `worker send` / `worker sink` | Internal subprocess operations used by the runner. |
 
 Root is required for namespace construction, qdiscs, and BPF loading. Reports and
@@ -392,15 +396,14 @@ superiority. More than baseline goodput in a separate trial reflects variability
 
 The low-rate search's strongest screening candidate failed separate confirmation.
 Do not replace that finding with the stronger overload demo when making a low-rate
-attack claim. See `../matched-recovery-analysis/results.md` and
-`../defense-demo-analysis/results.md` for the respective recorded outcomes.
+attack claim. See `../ldos-lab-history/analyses/matched-recovery-analysis/results.md` and
+`../ldos-lab-history/analyses/defense-demo-analysis/results.md` for the respective recorded outcomes.
 
 ## 11. Tests, formatting, and current limits
 
 ```bash
 make
-python3 -m unittest discover -s tests -v
-python3 -m compileall -q lab.py scripts tests
+python3 -B -m unittest discover -s tests -v
 bash -n scripts/setup.sh
 ```
 

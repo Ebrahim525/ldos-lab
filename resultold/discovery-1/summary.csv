@@ -1,5 +1,0 @@
-run,scenario,policy,goodput_bps,retransmits
-00-pulsed-12000000-200,pulsed,disabled,2754709.8094800054,438
-01-pulsed-20000000-300,pulsed,disabled,2613055.05473669,359
-03-none-8000000-100,none,disabled,3119155.189140832,53
-02-pulsed-20000000-100,pulsed,disabled,2265444.331112576,310

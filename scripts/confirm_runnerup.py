@@ -8,11 +8,13 @@ import random
 import os
 import statistics
 
+# Keep local imports from creating bytecode beside the source.
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import recovery_search as rs
 
 
-def main(source, out):
+def main(source, out, *, save):
     if out.exists():
         raise SystemExit("Choose new output")
     selection = rs.load(source / "selection.json")
@@ -100,11 +102,11 @@ def main(source, out):
         )
     rs.dump(out / "outcome.json", outcome)
     print(json.dumps(outcome, indent=2), flush=True)
-    if "SUDO_UID" in os.environ:
+    if save and "SUDO_UID" in os.environ:
         for p in [out, *out.rglob("*")]:
             if not p.is_symlink():
                 os.chown(p, int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"]))
 
 
 if __name__ == "__main__":
-    main(pathlib.Path(sys.argv[1]).resolve(), pathlib.Path(sys.argv[2]).resolve())
+    rs.lab.batch_cli(main, with_source=True)
